@@ -7,6 +7,27 @@ bump may include breaking language changes while the language stabilizes).
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/emela-lang/emela/compare/v0.21.0...v0.22.0) - 2026-10-18
+
+### Added
+
+- Std.Test に PBT とアサーション補助を同梱する ([#281](https://github.com/emela-lang/emela/pull/281))
+- *(core)* 数値ヘルパーと Bool の変換関数を追加 ([#278](https://github.com/emela-lang/emela/pull/278))
+
+### Fixed
+
+- ライブラリ専用プロジェクトの入口と build/run を修正 ([#266](https://github.com/emela-lang/emela/pull/266)) ([#275](https://github.com/emela-lang/emela/pull/275))
+- CLI のテストが同じ名前の一時ディレクトリを共有しないようにする ([#252](https://github.com/emela-lang/emela/pull/252))
+- 文字列リテラルの \t，\r，\u{...} と """ の複数行の文字列を仕様 2.4 のとおりの値にする ([#280](https://github.com/emela-lang/emela/pull/280))
+- const の自己参照が無限ループする問題を修正 ([#276](https://github.com/emela-lang/emela/pull/276))
+- WASM のスクラッチが静的なデータと重ならないようにする ([#257](https://github.com/emela-lang/emela/pull/257))
+
+### Other
+
+- clarify trailing operator line continuation ([#260](https://github.com/emela-lang/emela/pull/260)) ([#274](https://github.com/emela-lang/emela/pull/274))
+- WASM の線形メモリの配置を layout にまとめる ([#258](https://github.com/emela-lang/emela/pull/258))
+- reuse C runtime objects across integration tests ([#277](https://github.com/emela-lang/emela/pull/277))
+
 ## [0.21.0](https://github.com/emela-lang/emela/compare/v0.20.1...v0.21.0) - 2026-10-17
 
 ### Added
