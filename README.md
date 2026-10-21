@@ -231,7 +231,7 @@ effect Users {
   fn find(id: Int) -> User fails NotFound
 }
 
-handler SampleUsers implements Users {
+handler SampleUsers: Users {
   fn find(id) {
     id match {
       1 -> User(id: 1, name: "alice")
@@ -265,7 +265,7 @@ fn main() {
 }
 
 # Tests swap the handler instead of mocking.
-handler NoUsers implements Users {
+handler NoUsers: Users {
   fn find(id) { fail NotFound(id:) }
 }
 
@@ -319,7 +319,7 @@ fn main() {
 }
 
 # Resumes on the spot, so tests do not wait and need no `Async`.
-handler InstantClock implements Clock {
+handler InstantClock: Clock {
   suspend fn sleep(ms, resume) { resume(()) }
   fn now() { Instant.from_unix_milliseconds(0) }
 }

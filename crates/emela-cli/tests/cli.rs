@@ -168,6 +168,37 @@ fn check_reports_all_errors() {
 }
 
 #[test]
+fn incomplete_impl_is_rejected_by_every_command_and_target() {
+    let project = Project::new(
+        "incomplete-impl",
+        &[
+            ("Pome.toml", ""),
+            (
+                "src/main.emel",
+                "type User(id: Int)\ntrait Label {\n  fn label(self) -> String\n  fn merge(self, other: Self) -> Self\n  fn default(self) -> Int { 1 }\n}\nimpl User: Label {}\nfn main() {}\n@test\nfn works() {}\n",
+            ),
+        ],
+    );
+    let check = project.emela(&["check"]);
+    assert_eq!(check.code, Some(1), "{check:?}");
+    assert!(
+        check
+            .stderr
+            .contains("error[E0325]: incomplete impl: missing methods `label`, `merge`")
+    );
+    assert!(!check.stderr.contains("`default`"));
+    for command in ["build", "run", "test"] {
+        for target in ["js", "c", "wasm"] {
+            let run = project.emela(&[command, "--target", target]);
+            assert_eq!(run.code, Some(1), "{command} {target}: {run:?}");
+            assert_eq!(run.stderr, check.stderr, "{command} {target}");
+            assert!(run.stdout.is_empty(), "{command} {target}: {run:?}");
+        }
+    }
+    assert!(!project.path().join("target").exists());
+}
+
+#[test]
 fn check_file_and_directory_agree() {
     let project = Project::new("agree", BROKEN);
     let by_dir = project.emela(&["check", "."]);
@@ -236,10 +267,10 @@ fn build_reports_unsupported_expressions() {
         "unsupported",
         &[
             ("Pome.toml", ""),
-            // Function values cannot be shown (spec 10.6).
+            // Capability values cannot be shown.
             (
                 "src/main.emel",
-                "fn main() {\n  x = fn() { 1 }\n  dbg(\"#{x}\")\n}\n",
+                "import Std.Console.{Console, SystemConsole}\n\nfn main() {\n  with SystemConsole {\n    c = use Console\n    dbg(\"#{c}\")\n  }\n}\n",
             ),
         ],
     );
@@ -248,7 +279,7 @@ fn build_reports_unsupported_expressions() {
         assert_eq!(run.code, Some(1), "{command}");
         assert!(
             run.stderr
-                .starts_with("error: not supported yet: showing a function\n"),
+                .starts_with("error: not supported yet: showing a capability value\n"),
             "{command}: {}",
             run.stderr
         );
@@ -687,7 +718,7 @@ fn run_reports_unhandled_error_with_exit_code_1() {
             ("Pome.toml", ""),
             (
                 "src/main.emel",
-                "error NotFound(id: Int)\n\nfn find(id: Int) -> Int fails NotFound {\n  if id > 0 { id } else { fail NotFound(id:) }\n}\n\nfn main() {\n  dbg(find(0) escape { NotFound(_) -> 0 })\n  dbg(find(-1))\n}\n",
+                "error NotFound(id: Int) derive Show\n\nfn find(id: Int) -> Int fails NotFound {\n  if id > 0 { id } else { fail NotFound(id:) }\n}\n\nfn main() {\n  dbg(find(0) escape { NotFound(_) -> 0 })\n  dbg(find(-1))\n}\n",
             ),
         ],
     );
@@ -948,7 +979,7 @@ fn run_calls_external_module_next_to_the_source() {
             ),
             (
                 "src/host/host.emel",
-                "pub effect Host {\n  fn lone() -> String\n  fn boom() -> ()\n}\n\n@external(js, \"./ffi.mjs\", \"lone\")\nfn js_lone() -> String\n\n@external(js, \"./ffi.mjs\", \"boom\")\nfn js_boom() -> ()\n\npub handler NodeHost implements Host {\n  fn lone() { js_lone() }\n  fn boom() { js_boom() }\n}\n",
+                "pub effect Host {\n  fn lone() -> String\n  fn boom() -> ()\n}\n\n@external(js, \"./ffi.mjs\", \"lone\")\nfn js_lone() -> String\n\n@external(js, \"./ffi.mjs\", \"boom\")\nfn js_boom() -> ()\n\npub handler NodeHost: Host {\n  fn lone() { js_lone() }\n  fn boom() { js_boom() }\n}\n",
             ),
             (
                 "src/main.emel",

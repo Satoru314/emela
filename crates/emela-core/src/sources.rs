@@ -26,6 +26,8 @@ const SOURCES: &[(&str, &str)] = &[
     ("Bool", include_str!("../lib/core/bool.emel")),
     ("Std.Duration", include_str!("../lib/std/duration.emel")),
     ("Std.Instant", include_str!("../lib/std/instant.emel")),
+    ("Std.Map", include_str!("../lib/std/map.emel")),
+    ("Std.Set", include_str!("../lib/std/set.emel")),
     ("Std.State", include_str!("../lib/std/state.emel")),
     ("Std.Console", include_str!("../lib/std/console.emel")),
     ("Std.Random", include_str!("../lib/std/random.emel")),
@@ -41,15 +43,6 @@ const SOURCES: &[(&str, &str)] = &[
     ("Std.Cause", include_str!("../lib/std/cause.emel")),
     ("Std.Deferred", include_str!("../lib/std/deferred.emel")),
     ("Std.Fiber", include_str!("../lib/std/fiber.emel")),
-    ("Std.Test.Gen", include_str!("../lib/std/test_gen.emel")),
-    (
-        "Std.Test.Property",
-        include_str!("../lib/std/test_property.emel"),
-    ),
-    (
-        "Std.Test.Assert",
-        include_str!("../lib/std/test_assert.emel"),
-    ),
 ];
 
 /// Bundled host files as (path relative to `lib/`, contents) pairs. These are the files that
@@ -286,7 +279,7 @@ mod tests {
                 assert!(
                     core_source(module)
                         .unwrap()
-                        .contains(&format!("pub handler {h} ")),
+                        .contains(&format!("pub handler {h}: ")),
                     "{module} has no {h}"
                 );
             }

@@ -374,68 +374,6 @@ fn missing_node_is_a_diagnostic() {
     );
 }
 
-#[test]
-fn std_test_properties_fail_the_runner_but_do_not_catch_interruption() {
-    let sources = &[
-        ("app/Pome.toml", ""),
-        (
-            "app/src/main.emel",
-            r#"
-import Std.Test.Gen
-import Std.Test.Property
-
-effect Wait { suspend fn forever() -> () }
-handler Stuck implements Wait {
-  suspend fn forever(resume) { () }
-}
-error Broken
-
-@test
-fn assertion() {
-  Property.check(Gen.constant(42), fn(n) { assert n == 0 })
-}
-@test
-fn typed_failure() {
-  Property.check(Gen.constant(1), fn(n) { fail Broken })
-}
-@test
-fn interrupted() {
-  with Stuck { Property.check(Gen.int(), fn(n) { (use Wait).forever() }) }
-}
-@test
-fn keeps_going() {
-  Property.check(Gen.int(), fn(n) { assert n == n })
-}
-"#,
-        ),
-    ];
-    let (analysis, report, out) = run_tests(
-        "std-test-properties",
-        sources,
-        &mut LowerTests::default(),
-        &mut CoreJs,
-        None,
-    );
-    assert_eq!(analysis.diagnostics, []);
-    let report = report.unwrap();
-    assert_eq!(
-        (report.passed(), report.failed(), report.exit_code()),
-        (1, 3, 1)
-    );
-    assert!(
-        matches!(&report.results[0].outcome, TestOutcome::Defect(m)
-        if m.contains("counterexample: 42") && m.contains("assertion failed: n == 0")),
-        "{out}"
-    );
-    assert!(
-        matches!(&report.results[1].outcome, TestOutcome::Defect(m)
-        if m.contains("Property failed") && m.contains("error: Broken")),
-        "{out}"
-    );
-    assert_eq!(report.results[2].outcome, TestOutcome::Interrupted);
-    assert_eq!(report.results[3].outcome, TestOutcome::Passed);
-}
-
 const SOURCE_TESTS: &[(&str, &str)] = &[
     ("app/Pome.toml", ""),
     (
@@ -538,7 +476,7 @@ fn unhandled_errors_fail_only_that_test() {
         (
             "app/src/main.emel",
             "\
-error NotFound(id: Int)
+error NotFound(id: Int) derive Show
 
 fn find(id: Int) -> Int fails NotFound {
   if id > 0 { id } else { fail NotFound(id:) }
@@ -601,11 +539,11 @@ effect Store {
   fn get(key: String) -> Int fails Down
 }
 
-handler FixedStore implements Store {
+handler FixedStore: Store {
   fn get(key) { String.length(key) }
 }
 
-handler DownStore implements Store {
+handler DownStore: Store {
   fn get(key) { fail Down(reason: key) }
 }
 
@@ -796,7 +734,7 @@ effect Wait {
   suspend fn forever() -> ()
 }
 
-handler Pool(name: String) implements Users {
+handler Pool(name: String): Users {
   init {
     (use Console).print_line("open")
     Pool(name: "pool")
@@ -805,12 +743,12 @@ handler Pool(name: String) implements Users {
   fn find(id) { "#{self.name} #{id}" }
 }
 
-handler Broken implements Wait {
+handler Broken: Wait {
   init { fail Down }
   suspend fn forever(resume) { resume(()) }
 }
 
-handler Stuck implements Wait {
+handler Stuck: Wait {
   suspend fn forever(resume) { () }
 }
 

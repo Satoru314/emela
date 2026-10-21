@@ -36,11 +36,13 @@ pub(crate) fn lower_item(resolver: &mut Resolver<'_>, pending: Pending) {
         ast::Item::Enum(e) => lower.enum_item(pending.def, &pending.children, e),
         ast::Item::Error(e) => {
             let fields = lower.named_fields(e.field_list());
+            let derives = lower.derives(e.derive());
             Item::Error(ErrorItem {
                 fields: match fields {
                     Some(fields) => Fields::Named(fields),
                     None => Fields::None,
                 },
+                derives,
             })
         }
         ast::Item::Const(c) => {
@@ -61,7 +63,7 @@ pub(crate) fn lower_item(resolver: &mut Resolver<'_>, pending: Pending) {
             Item::Layer(LayerItem { members })
         }
         ast::Item::Trait(t) => lower.trait_item(&pending.children, t),
-        ast::Item::Impl(i) => lower.impl_item(i),
+        ast::Item::Impl(i) => lower.impl_item(pending.def, i),
     };
     lower.r.program.items.insert(pending.def, item);
 }
@@ -182,11 +184,25 @@ impl Lower<'_, '_> {
     /// `[A: Ord, Item]`. Pushes a type parameter scope; the caller pops it with
     /// `pop_type_params`.
     fn type_params(&mut self, owner: DefId, list: Option<SyntaxNode>) -> Vec<TypeParam> {
+        self.type_params_in(owner, list, false).0
+    }
+
+    /// Reads the type parameters like [`Self::type_params`]. In an impl head (`impl_head`), a
+    /// repeated name or the name of a type is not a type parameter but a malformed head (E0328,
+    /// spec 10.2), so neither E0213 nor W0201 is reported; the second value tells whether the head
+    /// is malformed. A repeated name still gets a type parameter, so the head keeps its arity.
+    fn type_params_in(
+        &mut self,
+        owner: DefId,
+        list: Option<SyntaxNode>,
+        impl_head: bool,
+    ) -> (Vec<TypeParam>, bool) {
         self.type_params.push(FxHashMap::default());
         let Some(list) = list else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         let mut params = Vec::new();
+        let mut malformed = false;
         let mut seen: FxHashMap<SmolStr, TextRange> = FxHashMap::default();
         for param in list.children().filter(|n| n.kind() == TYPE_PARAM) {
             let Some(token) = param
@@ -198,14 +214,17 @@ impl Lower<'_, '_> {
             };
             let (name, range) = token_name(&token);
             if let Some(&first) = seen.get(&name) {
-                self.error(
-                    range,
-                    DiagnosticKind::Duplicate {
-                        name,
-                        first: Some(first),
-                    },
-                );
-                continue;
+                if !impl_head {
+                    self.error(
+                        range,
+                        DiagnosticKind::Duplicate {
+                            name,
+                            first: Some(first),
+                        },
+                    );
+                    continue;
+                }
+                malformed = true;
             }
             seen.insert(name.clone(), range);
             // A type-name type parameter hides an outer type, effect or error of the same name
@@ -214,10 +233,14 @@ impl Lower<'_, '_> {
                 && (self.r.lookup(self.module, Ns::Type, &name).is_some()
                     || self.lookup_type_param(&name).is_some())
             {
-                self.error(
-                    range,
-                    DiagnosticKind::ShadowedByTypeParam { name: name.clone() },
-                );
+                if impl_head {
+                    malformed = true;
+                } else {
+                    self.error(
+                        range,
+                        DiagnosticKind::ShadowedByTypeParam { name: name.clone() },
+                    );
+                }
             }
             let def = self.r.alloc_def(
                 self.module,
@@ -233,7 +256,7 @@ impl Lower<'_, '_> {
             params.push((def, param));
         }
         // Constraints are looked up after every type parameter is in scope.
-        params
+        let params = params
             .into_iter()
             .map(|(def, param)| {
                 let bounds = param
@@ -246,7 +269,8 @@ impl Lower<'_, '_> {
                     .collect();
                 TypeParam { def, bounds }
             })
-            .collect()
+            .collect();
+        (params, malformed)
     }
 
     fn pop_type_params(&mut self) {
@@ -331,6 +355,56 @@ impl Lower<'_, '_> {
         }
         self.bind_all(binder);
         params
+    }
+
+    /// Parameters of a lambda. A pattern in place of a name becomes a hidden parameter
+    /// ([`LocalKind::PatParam`]) and a binding `pattern = parameter` to put at the head of the
+    /// body (spec 6.1), so type inference checks it as a binding (E0317). Names bound by all
+    /// parameters share one binder (E0220).
+    fn lambda_params(&mut self, list: Option<ast::ParamList>) -> (Vec<Param>, Vec<Stmt>) {
+        let Some(list) = list else {
+            return (Vec::new(), Vec::new());
+        };
+        let mut binder = Binder::default();
+        let mut params = Vec::new();
+        let mut lets = Vec::new();
+        for param in list.params() {
+            let ty = param.ty().map(|t| self.lower_type(&t));
+            if let Some(token) = param.name() {
+                let (name, range) = token_name(&token);
+                let local = self.bind(&mut binder, name, LocalKind::LambdaParam, range);
+                params.push(Param { local, ty });
+            } else if let Some(token) = child_token(param.syntax(), SELF_KW) {
+                // As in [`Self::params`].
+                if !self.self_type {
+                    self.error(
+                        token.text_range(),
+                        DiagnosticKind::SelfOutside { self_type: false },
+                    );
+                }
+                let local = self.bind(
+                    &mut binder,
+                    "self".into(),
+                    LocalKind::SelfParam,
+                    token.text_range(),
+                );
+                params.push(Param { local, ty });
+            } else if let Some(node) = param.pattern() {
+                let range = node.text_range();
+                let pat = self.pat(&node, &mut binder);
+                let local =
+                    self.alloc_local(node.text().to_string().into(), LocalKind::PatParam, range);
+                let value = self.alloc_expr(ExprKind::Path(Res::Local(local)), range);
+                params.push(Param { local, ty });
+                lets.push(Stmt::Let {
+                    pat,
+                    ty: None,
+                    value,
+                });
+            }
+        }
+        self.bind_all(binder);
+        (params, lets)
     }
 
     fn named_fields(&mut self, list: Option<ast::FieldList>) -> Option<Vec<FieldDef>> {
@@ -618,25 +692,77 @@ impl Lower<'_, '_> {
         })
     }
 
-    fn impl_item(&mut self, i: &ast::ImplDecl) -> Item {
+    fn impl_item(&mut self, def: DefId, i: &ast::ImplDecl) -> Item {
         let trait_ref = match i.trait_ref() {
             Some(p) => self.resolve_type_ns(&p, Expected::Trait),
             None => Res::Err,
         };
+        // `impl Map[K: Eq, V: Eq]: Eq` declares `K` and `V` for the impl (spec 10.2).
+        let (type_params, malformed) = self.type_params_in(def, i.type_params(), true);
+        if malformed && let Some(node) = i.self_ty() {
+            let head = node
+                .text()
+                .to_string()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.error(
+                node.text_range(),
+                DiagnosticKind::ImplHead { head: head.into() },
+            );
+        }
+        // The type is the name applied to its own type parameters (`Map[K, V]`).
+        let self_ty = i.self_ty().map(|node| {
+            let res = match i.self_path() {
+                Some(path) => self.resolve_type_ns(&path, Expected::Type),
+                None => Res::Err,
+            };
+            let args = type_params
+                .iter()
+                .map(|param| {
+                    let range = self.r.program.defs[param.def]
+                        .span
+                        .map_or(node.text_range(), |s| s.range);
+                    let kind = TypeKind::Path {
+                        res: Res::Def(param.def),
+                        args: Vec::new(),
+                    };
+                    self.alloc_type(kind, range)
+                })
+                .collect();
+            self.alloc_type(TypeKind::Path { res, args }, node.text_range())
+        });
         self.self_type = true;
-        let self_ty = i.self_ty().map(|t| self.lower_type(&t));
+        let mut seen: FxHashMap<SmolStr, TextRange> = FxHashMap::default();
         let fns = i
             .fns()
             .filter_map(|f| {
                 let token = f.name()?;
                 let (name, range) = token_name(&token);
+                // Like the functions of a trait, an impl's functions cannot repeat a name
+                // (E0213, spec 2.3).
+                if let Some(&first) = seen.get(&name) {
+                    self.error(
+                        range,
+                        DiagnosticKind::Duplicate {
+                            name: name.clone(),
+                            first: Some(first),
+                        },
+                    );
+                } else {
+                    seen.insert(name.clone(), range);
+                }
                 let trait_fn = self.member_of(trait_ref, &name, range);
                 self.r.check_intrinsic(self.module, f.syntax(), false);
+                let fn_def =
+                    self.r
+                        .alloc_def(self.module, name.clone(), range, DefKind::ImplFn, Some(def));
                 self.push_scope();
                 let params = self.params(f.param_list(), LocalKind::Param);
                 let body = f.body().map(|b| self.block(&b));
                 self.pop_scope();
                 Some(ImplFn {
+                    def: fn_def,
                     name: Label {
                         name,
                         span: self.span(range),
@@ -648,9 +774,12 @@ impl Lower<'_, '_> {
             })
             .collect();
         self.self_type = false;
+        self.pop_type_params();
         Item::Impl(ImplItem {
             trait_ref,
+            type_params,
             self_ty,
+            malformed_head: malformed,
             fns,
         })
     }
@@ -1185,12 +1314,16 @@ impl Lower<'_, '_> {
             }
             LAMBDA_EXPR => {
                 self.push_scope();
-                let params = self.params(
-                    node.children().find_map(ast::ParamList::cast),
-                    LocalKind::LambdaParam,
-                );
+                let (params, lets) =
+                    self.lambda_params(node.children().find_map(ast::ParamList::cast));
                 let body = self.child_expr(node, 0);
                 self.pop_scope();
+                // `fn(p) { body }` is `fn(t) { p = t; body }` (spec 6.1).
+                if !lets.is_empty()
+                    && let ExprKind::Block(block) = &mut self.r.program.exprs[body].kind
+                {
+                    block.stmts.splice(0..0, lets);
+                }
                 ExprKind::Lambda { params, body }
             }
             _ => ExprKind::Missing,
